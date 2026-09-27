@@ -1,8 +1,14 @@
 /* global GLOBAL_KEY, TAB_OVERRIDE_KEY, debug, getHostname */
 
-// tabId -> exact CSS code currently injected into that tab
+// Each entry has two styles, injected separately so they land in different cascade origins:
+// `style` as author CSS (competes with the page by specificity),
+// `importantStyle` as user CSS (its !important rules beat everything the page does).
+const ORIGIN_FIELDS = { author: 'style', user: 'importantStyle' };
+const ORIGINS = Object.keys(ORIGIN_FIELDS);
+
+// tabId -> { author, user }: exact CSS code currently injected into that tab per origin
 const applied = new Map();
-// tabId -> every distinct CSS code injected into that tab, oldest first (capped).
+// tabId -> every distinct { cssOrigin, code } injected into that tab, oldest first (capped).
 // A page restored from the back/forward cache keeps the CSS it had when it was left,
 // which may be an older version than what `applied` knows about.
 const injectedCodes = new Map();
@@ -18,38 +24,47 @@ const getTabOverride = async (tabId, hostname) => {
   return undefined;
 };
 
-const buildCode = async (tabId, hostname) => {
+// Returns { author, user }
+const buildCodes = async (tabId, hostname) => {
   const keys = hostname ? [GLOBAL_KEY, hostname] : [GLOBAL_KEY];
   const data = await browser.storage.sync.get(keys);
   const global = data[GLOBAL_KEY];
   const site = hostname ? data[hostname] : undefined;
 
-  const parts = [];
+  const entries = [];
   // global first, so the site style wins ties
-  if (global && global.enabled && global.style) {
-    parts.push(global.style);
+  if (global && global.enabled) {
+    entries.push(global);
   }
-  if (site && site.style) {
+  if (site) {
     const override = await getTabOverride(tabId, hostname);
     const siteOn = override !== undefined ? override : site.enabled;
     if (siteOn) {
-      parts.push(site.style);
+      entries.push(site);
     }
   }
-  return parts.join('\n');
+
+  const codes = {};
+  ORIGINS.forEach((cssOrigin) => {
+    const field = ORIGIN_FIELDS[cssOrigin];
+    codes[cssOrigin] = entries.map((entry) => entry[field]).filter(Boolean).join('\n');
+  });
+  return codes;
 };
 
-const remember = (tabId, code) => {
-  const codes = (injectedCodes.get(tabId) || []).filter((c) => c !== code);
-  codes.push(code);
-  injectedCodes.set(tabId, codes.slice(-HISTORY_LIMIT));
+const remember = (tabId, cssOrigin, code) => {
+  const known = (injectedCodes.get(tabId) || [])
+    .filter((c) => c.cssOrigin !== cssOrigin || c.code !== code);
+  known.push({ cssOrigin, code });
+  injectedCodes.set(tabId, known.slice(-HISTORY_LIMIT));
 };
 
 // Remove each code this tab has ever had, once. On a fresh page these are no-ops;
 // on a back/forward cache restore one of them is the stale CSS the page came back with.
 const removeKnownCodes = async (tabId) => {
-  const codes = injectedCodes.get(tabId) || [];
-  await Promise.all(codes.map((code) => browser.tabs.removeCSS(tabId, { code })
+  const known = injectedCodes.get(tabId) || [];
+  await Promise.all(known.map(({ cssOrigin, code }) => browser.tabs
+    .removeCSS(tabId, { code, cssOrigin })
     .catch((e) => debug(`Failed to remove old styles from tab ${tabId}: ${e}`))));
 };
 
@@ -58,20 +73,27 @@ const applyNow = async (tabId, hostname, reset) => {
     applied.delete(tabId);
     await removeKnownCodes(tabId);
   }
-  const code = await buildCode(tabId, hostname);
-  const old = applied.get(tabId) || '';
-  if (code === old) {
-    return;
-  }
-  if (old) {
-    await browser.tabs.removeCSS(tabId, { code: old });
-    applied.delete(tabId);
-  }
-  if (code) {
-    await browser.tabs.insertCSS(tabId, { code, runAt: 'document_start' });
-    applied.set(tabId, code);
-    remember(tabId, code);
-  }
+  const codes = await buildCodes(tabId, hostname);
+  const current = applied.get(tabId) || { author: '', user: '' };
+  applied.set(tabId, current);
+
+  // removeCSS must be given the same cssOrigin the code was inserted with
+  await Promise.all(ORIGINS.map(async (cssOrigin) => {
+    const code = codes[cssOrigin];
+    const old = current[cssOrigin];
+    if (code === old) {
+      return;
+    }
+    if (old) {
+      await browser.tabs.removeCSS(tabId, { code: old, cssOrigin });
+      current[cssOrigin] = '';
+    }
+    if (code) {
+      await browser.tabs.insertCSS(tabId, { code, cssOrigin, runAt: 'document_start' });
+      current[cssOrigin] = code;
+      remember(tabId, cssOrigin, code);
+    }
+  }));
 };
 
 // reset: the tab navigated, so `applied` no longer describes the document

@@ -21,7 +21,19 @@
         <button id="btnRename" class="neutral">Rename</button>
         <button id="btnDelete" class="error">Delete</button>
       </div>
-      <textarea id="styleData" wrap="soft" spellcheck="false"></textarea>
+      <p id="status" class="status hidden" role="alert"></p>
+      <div class="style-areas">
+        <label class="style-area">
+          <span class="style-title">default</span>
+          <span class="style-hint">Competes with the page's CSS by specificity.</span>
+          <textarea id="styleData" wrap="soft" spellcheck="false"></textarea>
+        </label>
+        <label class="style-area">
+          <span class="style-title">!important</span>
+          <span class="style-hint">Beats all page CSS, but only for declarations marked <code>!important</code>. Declarations without it lose to every page style.</span>
+          <textarea id="importantStyleData" wrap="soft" spellcheck="false"></textarea>
+        </label>
+      </div>
     </main>
   </body>
 </html>

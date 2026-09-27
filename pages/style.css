@@ -96,3 +96,43 @@ textarea {
 .button-area button {
   margin-right: 10px;
 }
+
+.style-areas {
+  display: flex;
+  gap: 1rem;
+  flex: 1;
+  min-height: 0;
+}
+
+.style-area {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.style-title {
+  font-weight: 700;
+  font-family: monospace;
+  font-size: 1.1rem;
+}
+
+.style-hint {
+  font-size: .85rem;
+  opacity: .75;
+  margin: .25rem 0 .5rem;
+}
+
+@media (max-width: 900px) {
+  .style-areas {
+    flex-direction: column;
+  }
+}
+
+.status {
+  margin: 0 0 10px;
+  padding: 10px;
+  border-radius: 4px;
+  background: #b30000;
+  color: #fff;
+}

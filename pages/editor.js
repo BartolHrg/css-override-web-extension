@@ -6,14 +6,61 @@ let ACTIVE_KEY = GLOBAL_KEY;
 
 const displayName = (key) => (key === GLOBAL_KEY ? 'Global (all sites)' : key);
 
-const getEntry = (key) => SITE_DATA[key] || { enabled: true, style: '' };
+// entry field -> textarea id
+const STYLE_FIELDS = { style: 'styleData', importantStyle: 'importantStyleData' };
 
-const isDirty = () => document.getElementById('styleData').value.trim() !== getEntry(ACTIVE_KEY).style;
+// Entries saved before importantStyle existed don't have it, so fill in defaults
+const getEntry = (key) => ({
+  enabled: true, style: '', importantStyle: '', ...SITE_DATA[key],
+});
+
+const readStyles = () => {
+  const styles = {};
+  Object.entries(STYLE_FIELDS).forEach(([field, id]) => {
+    styles[field] = document.getElementById(id).value.trim();
+  });
+  return styles;
+};
+
+const writeStyles = (styles) => {
+  Object.entries(STYLE_FIELDS).forEach(([field, id]) => {
+    document.getElementById(id).value = styles[field];
+  });
+};
+
+const isDirty = () => {
+  const entry = getEntry(ACTIVE_KEY);
+  const styles = readStyles();
+  return Object.keys(STYLE_FIELDS).some((field) => styles[field] !== entry[field]);
+};
 
 const confirmDiscard = () => !isDirty()
   || window.confirm('You have unsaved changes. Discard them?'); // eslint-disable-line no-alert
 
-const saveEntry = (key, entry) => browser.storage.sync.set({ [key]: entry });
+// storage.sync limit per item: key length + JSON length of the value
+const QUOTA_BYTES_PER_ITEM = browser.storage.sync.QUOTA_BYTES_PER_ITEM || 8192;
+
+const showError = (message) => {
+  const status = document.getElementById('status');
+  status.textContent = message;
+  status.classList.toggle('hidden', !message);
+};
+
+// Returns whether the write succeeded; on failure the error is shown in the editor
+const saveEntry = async (key, entry) => {
+  try {
+    await browser.storage.sync.set({ [key]: entry });
+    showError('');
+    return true;
+  } catch (e) {
+    const size = key.length + JSON.stringify(entry).length;
+    const sizeInfo = size > QUOTA_BYTES_PER_ITEM
+      ? ` This entry is ${size} bytes; the limit is ${QUOTA_BYTES_PER_ITEM} bytes for both styles together.`
+      : '';
+    showError(`Couldn't save: ${e.message || e}.${sizeInfo}`);
+    return false;
+  }
+};
 
 const renderList = () => {
   const ul = document.getElementById('siteList');
@@ -36,12 +83,13 @@ const renderEditor = () => {
   const entry = getEntry(ACTIVE_KEY);
   document.getElementById('siteName').textContent = displayName(ACTIVE_KEY);
   document.getElementById('chkEnabled').checked = entry.enabled;
-  document.getElementById('styleData').value = entry.style;
+  writeStyles(entry);
   document.getElementById('btnRename').disabled = ACTIVE_KEY === GLOBAL_KEY;
 };
 
 const selectEntry = (key) => {
   ACTIVE_KEY = key;
+  showError('');
   const params = new URLSearchParams(window.location.search);
   params.set('hostname', key);
   window.history.replaceState({}, '', `${window.location.pathname}?${params}`);
@@ -51,21 +99,23 @@ const selectEntry = (key) => {
 
 // Background re-applies styles to open tabs via storage.onChanged
 const btnEventSave = async () => {
-  const entry = {
-    ...getEntry(ACTIVE_KEY),
-    style: document.getElementById('styleData').value.trim(),
-  };
-  SITE_DATA[ACTIVE_KEY] = entry;
-  await saveEntry(ACTIVE_KEY, entry);
-  renderList();
+  const entry = { ...getEntry(ACTIVE_KEY), ...readStyles() };
+  // Only record the entry once saved, so a failed save still counts as unsaved changes
+  if (await saveEntry(ACTIVE_KEY, entry)) {
+    SITE_DATA[ACTIVE_KEY] = entry;
+    renderList();
+  }
 };
 
 const chkEventToggleEnabled = async (event) => {
-  // Only the flag is saved; unsaved CSS in the textarea stays unsaved
+  // Only the flag is saved; unsaved CSS in the textareas stays unsaved
   const entry = { ...getEntry(ACTIVE_KEY), enabled: event.target.checked };
-  SITE_DATA[ACTIVE_KEY] = entry;
-  await saveEntry(ACTIVE_KEY, entry);
-  renderList();
+  if (await saveEntry(ACTIVE_KEY, entry)) {
+    SITE_DATA[ACTIVE_KEY] = entry;
+    renderList();
+  } else {
+    event.target.checked = !event.target.checked; // eslint-disable-line no-param-reassign
+  }
 };
 
 const promptHostname = (message, initial = '') => {
@@ -92,7 +142,7 @@ const btnEventAdd = () => {
   }
   const hostname = promptHostname('Hostname (e.g. example.com):');
   if (hostname) {
-    SITE_DATA[hostname] = { enabled: true, style: '' };
+    SITE_DATA[hostname] = getEntry(hostname);
     selectEntry(hostname);
   }
 };
@@ -103,18 +153,20 @@ const btnEventRename = async () => {
   if (!newKey) {
     return;
   }
-  const unsavedStyle = document.getElementById('styleData').value;
+  const unsavedStyles = readStyles();
   const entry = getEntry(oldKey);
-  SITE_DATA[newKey] = entry;
-  delete SITE_DATA[oldKey];
   // Write the new key before removing the old one, so a failure never loses the style
   const stored = await browser.storage.sync.get(oldKey);
   if (stored[oldKey]) {
-    await saveEntry(newKey, entry);
+    if (!await saveEntry(newKey, entry)) {
+      return;
+    }
     await browser.storage.sync.remove(oldKey);
   }
+  SITE_DATA[newKey] = entry;
+  delete SITE_DATA[oldKey];
   selectEntry(newKey);
-  document.getElementById('styleData').value = unsavedStyle;
+  writeStyles(unsavedStyles);
 };
 
 const btnEventDelete = async () => {
@@ -143,7 +195,7 @@ const onStorageChanged = (changes, area) => {
   if (ACTIVE_KEY in changes) {
     document.getElementById('chkEnabled').checked = getEntry(ACTIVE_KEY).enabled;
     if (!dirty) {
-      document.getElementById('styleData').value = getEntry(ACTIVE_KEY).style;
+      writeStyles(getEntry(ACTIVE_KEY));
     }
   }
 };
@@ -156,7 +208,7 @@ const initializePage = async () => {
   const hostname = params.get('hostname');
   if (hostname && !(hostname in SITE_DATA)) {
     // Opened from the popup for a site with no styles yet; saved on first Save
-    SITE_DATA[hostname] = { enabled: true, style: '' };
+    SITE_DATA[hostname] = getEntry(hostname);
   }
   selectEntry(hostname || GLOBAL_KEY);
 };
