@@ -1,5 +1,5 @@
 {
-  "name": "css-override-web-extension",
+  "name": "css-override-web-extension-bbx",
   "version": "1.0.0",
   "description": "",
   "main": "index.js",
@@ -12,6 +12,6 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "lint": "eslint ."
   },
-  "author": "Scott Colegrove (https://github.com/swcolegrove)",
+  "author": "Bartol Hrg (https://github.com/BartolHrg/), Scott Colegrove (https://github.com/swcolegrove)",
   "license": "ISC"
 }

@@ -2,9 +2,9 @@
 
   "description": "Adds a browser action to toggle applying CSS to pages.",
   "manifest_version": 2,
-  "name": "CSS Override",
+  "name": "CSS Override With Global",
   "version": "1.0",
-  "homepage_url": "https://github.com/swcolegrove/css-override-web-extension",
+  "homepage_url": "https://github.com/BartolHrg/css-override-web-extension",
   "background": {
     "scripts": ["global-resources/script.js", "background.js"],
     "persistent": true
@@ -32,7 +32,10 @@
   },
   "browser_specific_settings": {
     "gecko": {
-      "id": "css-override@scottco.co"
+      "id": "css-override-bbx@bartol.hrg",
+      "data_collection_permissions": {
+        "required": ["none"]
+      }
     }
   }
 }
