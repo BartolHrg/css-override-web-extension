@@ -1,135 +1,186 @@
-let SITE_DATA;
-let ACTIVE_SITE_ID;
+/* global GLOBAL_KEY, debug, normalizeHostname */
 
-const debug = (msg) => {
-  console.log(`css-override-web-extension: ${msg}`); // eslint-disable-line
-};
+// Mirror of storage.sync, plus entries added here that haven't been saved yet
+let SITE_DATA = {};
+let ACTIVE_KEY = GLOBAL_KEY;
 
-const getStorageData = () => browser.storage.sync.get();
+const displayName = (key) => (key === GLOBAL_KEY ? 'Global (all sites)' : key);
 
-const editSiteStyles = () => {
-  const txtAreaStyle = document.getElementById('styleData');
-  const siteStyles = SITE_DATA[ACTIVE_SITE_ID].style;
-  txtAreaStyle.value = siteStyles || '';
+const getEntry = (key) => SITE_DATA[key] || { enabled: true, style: '' };
 
-  const editorArea = document.getElementById('editorArea');
+const isDirty = () => document.getElementById('styleData').value.trim() !== getEntry(ACTIVE_KEY).style;
 
-  const headingSiteName = document.getElementById('siteName');
-  if (headingSiteName) {
-    editorArea.removeChild(headingSiteName);
-  }
+const confirmDiscard = () => !isDirty()
+  || window.confirm('You have unsaved changes. Discard them?'); // eslint-disable-line no-alert
 
-  const heading = document.createElement('H1');
-  heading.setAttribute('id', 'siteName');
-  const headingText = document.createTextNode(`Editing: ${ACTIVE_SITE_ID}`);
-  heading.appendChild(headingText);
-  editorArea.insertBefore(heading, editorArea.childNodes[0]);
+const saveEntry = (key, entry) => browser.storage.sync.set({ [key]: entry });
 
-  // Hide site list & show editor
-  editorArea.classList.remove('hide');
-  const listArea = document.getElementById('listArea');
-  listArea.classList.add('hide');
-};
-
-const listEventEditSiteStyles = function clickEditSite() {
-  ACTIVE_SITE_ID = this.id;
-  editSiteStyles();
-};
-
-const setStorageData = (obj) => browser.storage.sync.set(obj).then(() => true, () => false);
-
-const btnEventSaveStyles = async () => {
-  const style = document.getElementById('styleData').value;
-  const parsedStyle = style.trim();
-
-  const obj = {};
-  obj[ACTIVE_SITE_ID] = { ...SITE_DATA[ACTIVE_SITE_ID] };
-  obj[ACTIVE_SITE_ID].style = parsedStyle;
-  await setStorageData(obj);
-
-  browser.runtime.sendMessage({
-    action: 'updateStyle',
-    tabUrl: ACTIVE_SITE_ID,
+const renderList = () => {
+  const ul = document.getElementById('siteList');
+  ul.textContent = '';
+  const hostnames = Object.keys(SITE_DATA).filter((key) => key !== GLOBAL_KEY).sort();
+  [GLOBAL_KEY, ...hostnames].forEach((key) => {
+    const li = document.createElement('li');
+    li.textContent = displayName(key);
+    li.classList.toggle('active', key === ACTIVE_KEY);
+    li.classList.toggle('disabled', !getEntry(key).enabled);
+    li.addEventListener('click', () => {
+      // eslint-disable-next-line no-use-before-define
+      if (key !== ACTIVE_KEY && confirmDiscard()) selectEntry(key);
+    });
+    ul.appendChild(li);
   });
 };
 
-const btnEventClearTextArea = () => {
-  document.getElementById('styleData').value = '';
+const renderEditor = () => {
+  const entry = getEntry(ACTIVE_KEY);
+  document.getElementById('siteName').textContent = displayName(ACTIVE_KEY);
+  document.getElementById('chkEnabled').checked = entry.enabled;
+  document.getElementById('styleData').value = entry.style;
+  document.getElementById('btnRename').disabled = ACTIVE_KEY === GLOBAL_KEY;
 };
 
-const initializePage = () => {
-  // Hide editor area
-  const editorArea = document.getElementById('editorArea');
-  editorArea.classList.add('hide');
+const selectEntry = (key) => {
+  ACTIVE_KEY = key;
+  const params = new URLSearchParams(window.location.search);
+  params.set('hostname', key);
+  window.history.replaceState({}, '', `${window.location.pathname}?${params}`);
+  renderList();
+  renderEditor();
+};
 
-  btnEventClearTextArea();
+// Background re-applies styles to open tabs via storage.onChanged
+const btnEventSave = async () => {
+  const entry = {
+    ...getEntry(ACTIVE_KEY),
+    style: document.getElementById('styleData').value.trim(),
+  };
+  SITE_DATA[ACTIVE_KEY] = entry;
+  await saveEntry(ACTIVE_KEY, entry);
+  renderList();
+};
 
-  // Reset site list
-  const listArea = document.getElementById('listArea');
-  let ulSiteList = document.getElementById('siteList');
-  if (ulSiteList) {
-    listArea.removeChild(ulSiteList);
+const chkEventToggleEnabled = async (event) => {
+  // Only the flag is saved; unsaved CSS in the textarea stays unsaved
+  const entry = { ...getEntry(ACTIVE_KEY), enabled: event.target.checked };
+  SITE_DATA[ACTIVE_KEY] = entry;
+  await saveEntry(ACTIVE_KEY, entry);
+  renderList();
+};
+
+const promptHostname = (message, initial = '') => {
+  const input = window.prompt(message, initial); // eslint-disable-line no-alert
+  if (input === null) {
+    return '';
   }
+  const hostname = normalizeHostname(input);
+  if (!hostname) {
+    window.alert(`"${input}" is not a valid hostname.`); // eslint-disable-line no-alert
+    return '';
+  }
+  if (hostname in SITE_DATA) {
+    window.alert(`${hostname} already exists.`); // eslint-disable-line no-alert
+    return '';
+  }
+  return hostname;
+};
 
-  // Build site list
-  const ul = document.createElement('ul');
-  ul.setAttribute('id', 'siteList');
-  listArea.appendChild(ul);
+// New entries only exist here until their first save
+const btnEventAdd = () => {
+  if (!confirmDiscard()) {
+    return;
+  }
+  const hostname = promptHostname('Hostname (e.g. example.com):');
+  if (hostname) {
+    SITE_DATA[hostname] = { enabled: true, style: '' };
+    selectEntry(hostname);
+  }
+};
 
-  getStorageData().then((storageData) => {
-    debug(JSON.stringify(storageData));
-    SITE_DATA = storageData;
+const btnEventRename = async () => {
+  const oldKey = ACTIVE_KEY;
+  const newKey = promptHostname(`Rename ${oldKey} to:`, oldKey);
+  if (!newKey) {
+    return;
+  }
+  const unsavedStyle = document.getElementById('styleData').value;
+  const entry = getEntry(oldKey);
+  SITE_DATA[newKey] = entry;
+  delete SITE_DATA[oldKey];
+  // Write the new key before removing the old one, so a failure never loses the style
+  const stored = await browser.storage.sync.get(oldKey);
+  if (stored[oldKey]) {
+    await saveEntry(newKey, entry);
+    await browser.storage.sync.remove(oldKey);
+  }
+  selectEntry(newKey);
+  document.getElementById('styleData').value = unsavedStyle;
+};
 
-    ulSiteList = document.getElementById('siteList');
-    Object.keys(SITE_DATA).forEach((site) => {
-      const li = document.createElement('li');
-      li.appendChild(document.createTextNode(site));
-      li.setAttribute('id', site);
-      ulSiteList.appendChild(li);
-      li.addEventListener('click', listEventEditSiteStyles);
-    });
+const btnEventDelete = async () => {
+  if (!window.confirm(`Delete styles for ${displayName(ACTIVE_KEY)}?`)) { // eslint-disable-line no-alert
+    return;
+  }
+  delete SITE_DATA[ACTIVE_KEY];
+  await browser.storage.sync.remove(ACTIVE_KEY);
+  selectEntry(GLOBAL_KEY);
+};
 
-    const params = new URLSearchParams(document.location.search.substring(1));
-    const siteIdQP = params.get('siteId');
-    if (siteIdQP) {
-      ACTIVE_SITE_ID = siteIdQP;
-      editSiteStyles();
+// Keep in sync with changes made elsewhere (popup toggles, other editor tabs)
+const onStorageChanged = (changes, area) => {
+  if (area !== 'sync') {
+    return;
+  }
+  const dirty = isDirty();
+  Object.entries(changes).forEach(([key, { newValue }]) => {
+    if (newValue) {
+      SITE_DATA[key] = newValue;
+    } else if (key !== ACTIVE_KEY) {
+      delete SITE_DATA[key];
     }
   });
-};
-
-const btnEventDoneEditing = () => {
-  const editorArea = document.getElementById('editorArea');
-  editorArea.classList.add('hide');
-  const listArea = document.getElementById('listArea');
-  listArea.classList.remove('hide');
-
-  const params = new URLSearchParams(document.location.search.substring(1));
-  params.delete('siteId');
-  window.history.replaceState({}, '', `${window.location.pathname}?${params}`);
-  window.location.reload();
-};
-
-const btnEventDeleteEntry = () => {
-  const shouldDelete = confirm('Are you sure you want to delete this?'); // eslint-disable-line
-  if (shouldDelete) {
-    browser.storage.sync.remove(ACTIVE_SITE_ID);
-    btnEventDoneEditing();
+  renderList();
+  if (ACTIVE_KEY in changes) {
+    document.getElementById('chkEnabled').checked = getEntry(ACTIVE_KEY).enabled;
+    if (!dirty) {
+      document.getElementById('styleData').value = getEntry(ACTIVE_KEY).style;
+    }
   }
+};
+
+const initializePage = async () => {
+  SITE_DATA = await browser.storage.sync.get();
+  debug(JSON.stringify(SITE_DATA));
+
+  const params = new URLSearchParams(window.location.search);
+  const hostname = params.get('hostname');
+  if (hostname && !(hostname in SITE_DATA)) {
+    // Opened from the popup for a site with no styles yet; saved on first Save
+    SITE_DATA[hostname] = { enabled: true, style: '' };
+  }
+  selectEntry(hostname || GLOBAL_KEY);
 };
 
 document.addEventListener('DOMContentLoaded', () => {
-  const btnDelete = document.getElementById('btnDelete');
-  btnDelete.addEventListener('click', btnEventDeleteEntry);
+  document.getElementById('btnAdd').addEventListener('click', btnEventAdd);
+  document.getElementById('btnSave').addEventListener('click', btnEventSave);
+  document.getElementById('btnRename').addEventListener('click', btnEventRename);
+  document.getElementById('btnDelete').addEventListener('click', btnEventDelete);
+  document.getElementById('chkEnabled').addEventListener('change', chkEventToggleEnabled);
 
-  const btnClear = document.getElementById('btnClear');
-  btnClear.addEventListener('click', btnEventClearTextArea);
-
-  const btnSave = document.getElementById('btnSave');
-  btnSave.addEventListener('click', btnEventSaveStyles);
-
-  const btnDone = document.getElementById('btnDone');
-  btnDone.addEventListener('click', btnEventDoneEditing);
+  document.addEventListener('keydown', (event) => {
+    if ((event.ctrlKey || event.metaKey) && event.key === 's') {
+      event.preventDefault();
+      btnEventSave();
+    }
+  });
+  window.addEventListener('beforeunload', (event) => {
+    if (isDirty()) {
+      event.preventDefault();
+      event.returnValue = ''; // eslint-disable-line no-param-reassign
+    }
+  });
+  browser.storage.onChanged.addListener(onStorageChanged);
 
   initializePage();
 });

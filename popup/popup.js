@@ -1,113 +1,97 @@
+/* global TAB_OVERRIDE_KEY, getHostname */
+
 let ACTIVE_TAB;
-
-const debug = (msg) => {
-  console.log(`css-override-web-extension: ${msg}`); // eslint-disable-line
-};
-
-const getTabUrl = (tab) => new URL(tab.url).hostname;
+let HOSTNAME;
 
 const getActiveTab = () => browser.tabs.query({ active: true, currentWindow: true })
   .then((tabs) => tabs[0]);
 
-
-const getStorageData = (domainKey) => browser.storage.sync.get(domainKey)
-  .then((data) => data);
-
-const setStorageData = (obj) => browser.storage.sync.set(obj).then(() => true, () => false);
-
-const updatePopup = (stylesEnabled) => {
-  const btnToggleON = document.getElementById('btnToggleON');
-  const btnToggleOFF = document.getElementById('btnToggleOFF');
-
-  if (stylesEnabled) {
-    btnToggleOFF.classList.add('hidden');
-    btnToggleON.classList.remove('hidden');
-  } else {
-    btnToggleON.classList.add('hidden');
-    btnToggleOFF.classList.remove('hidden');
-  }
+const getSiteEnabled = async () => {
+  const data = await browser.storage.sync.get(HOSTNAME);
+  return Boolean(data[HOSTNAME] && data[HOSTNAME].enabled);
 };
 
-const addSiteToStorage = async (tabUrl, enabled = true) => {
-  debug('Applying styles to site for first time');
-  const obj = {};
-  obj[tabUrl] = {
-    enabled,
-    style: '',
-  };
-  await setStorageData(obj);
+// 'default' | 'on' | 'off'; an override saved for another hostname no longer applies
+const getTabState = async () => {
+  const override = await browser.sessions.getTabValue(ACTIVE_TAB.id, TAB_OVERRIDE_KEY);
+  if (override && override.hostname === HOSTNAME) {
+    return override.state;
+  }
+  return 'default';
 };
 
-const toggleStyles = async () => {
-  debug('Toggle style');
-  const tabUrl = getTabUrl(ACTIVE_TAB);
-  if (!tabUrl) {
-    return;
-  }
+const onOff = (enabled) => (enabled ? 'on' : 'off');
 
-  const tabData = await getStorageData(tabUrl);
-  let enabled = true;
-  if (tabData && tabData[tabUrl]) {
-    tabData[tabUrl].enabled = !tabData[tabUrl].enabled;
-    enabled = tabData[tabUrl].enabled;
-    await setStorageData(tabData);
-  } else {
-    addSiteToStorage(tabUrl);
-  }
+const updatePopup = async () => {
+  const btnToggleHostname = document.getElementById('btnToggleHostname');
+  const btnToggleTab = document.getElementById('btnToggleTab');
 
-  browser.runtime.sendMessage({
-    action: 'reloadTab',
-    tab: {
-      id: ACTIVE_TAB.id,
-      url: tabUrl,
-    },
-  }).then(() => {
-    updatePopup(enabled);
+  const siteEnabled = await getSiteEnabled();
+  const tabState = await getTabState();
+
+  btnToggleHostname.textContent = `Site: ${onOff(siteEnabled).toUpperCase()}`;
+  btnToggleHostname.classList.toggle('neutral', !siteEnabled);
+
+  const tabEnabled = tabState === 'default' ? siteEnabled : tabState === 'on';
+  btnToggleTab.textContent = tabState === 'default'
+    ? `Tab: default (${onOff(siteEnabled)})`
+    : `Tab: ${tabState.toUpperCase()}`;
+  btnToggleTab.classList.toggle('neutral', !tabEnabled);
+};
+
+const toggleHostname = async () => {
+  const data = await browser.storage.sync.get(HOSTNAME);
+  const site = data[HOSTNAME] || { enabled: false, style: '' };
+  // background re-applies styles via storage.onChanged
+  await browser.storage.sync.set({ [HOSTNAME]: { ...site, enabled: !site.enabled } });
+  await updatePopup();
+};
+
+// The first click always flips what the page shows:
+// default -> opposite of site -> same as site (pinned) -> default
+const toggleTab = async () => {
+  const siteState = onOff(await getSiteEnabled());
+  const oppositeState = onOff(siteState === 'off');
+  const next = {
+    default: oppositeState,
+    [oppositeState]: siteState,
+    [siteState]: 'default',
+  }[await getTabState()];
+
+  await browser.sessions.setTabValue(ACTIVE_TAB.id, TAB_OVERRIDE_KEY, {
+    hostname: HOSTNAME,
+    state: next,
   });
+  // sessions changes don't fire storage.onChanged, so tell background directly
+  await browser.runtime.sendMessage({ action: 'applyTab', tabId: ACTIVE_TAB.id });
+  await updatePopup();
+};
+
+const openEditor = () => {
+  const page = '../pages/editor.html';
+  const url = HOSTNAME ? `${page}?hostname=${encodeURIComponent(HOSTNAME)}` : page;
+  browser.tabs.create({ url, active: true });
+  window.close();
 };
 
 const initializePopup = async () => {
   ACTIVE_TAB = await getActiveTab();
-  const tabUrl = getTabUrl(ACTIVE_TAB);
+  HOSTNAME = getHostname(ACTIVE_TAB.url);
 
-  const tabData = await getStorageData(tabUrl);
-  if (tabData && tabData[tabUrl]) {
-    updatePopup(tabData[tabUrl].enabled);
-  } else {
-    updatePopup(false);
+  const heading = document.getElementById('hostname');
+  if (!HOSTNAME) {
+    heading.textContent = 'No site';
+    document.getElementById('btnToggleHostname').disabled = true;
+    document.getElementById('btnToggleTab').disabled = true;
+    return;
   }
-};
-
-const openEditorWindow = async () => {
-  const tabUrl = getTabUrl(ACTIVE_TAB);
-  const page = '../pages/editor.html';
-  const url = tabUrl ? `${page}?siteId=${tabUrl}` : page;
-  const createData = {
-    url,
-    active: true,
-  };
-
-  const tabData = await getStorageData(tabUrl);
-  if (!tabData || !tabData[tabUrl]) {
-    await addSiteToStorage(tabUrl, false);
-  }
-
-  browser.tabs.create(createData).then(() => {
-    // debug(JSON.stringify(tab))
-    // const msg = {
-    //   url: getTabUrl(ACTIVE_TAB),
-    // };
-    // browser.tabs.sendMessage(tab.id, msg);
-  });
+  heading.textContent = HOSTNAME;
+  await updatePopup();
 };
 
 document.addEventListener('DOMContentLoaded', () => {
-  const btnToggleON = document.getElementById('btnToggleON');
-  btnToggleON.addEventListener('click', toggleStyles);
-  const btnToggleOFF = document.getElementById('btnToggleOFF');
-  btnToggleOFF.addEventListener('click', toggleStyles);
-
-  const btnOpenEditor = document.getElementById('btnOpenEditor');
-  btnOpenEditor.addEventListener('click', openEditorWindow);
+  document.getElementById('btnToggleHostname').addEventListener('click', toggleHostname);
+  document.getElementById('btnToggleTab').addEventListener('click', toggleTab);
+  document.getElementById('btnOpenEditor').addEventListener('click', openEditor);
   initializePopup();
 });

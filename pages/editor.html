@@ -5,22 +5,23 @@
     <meta content="utf-8" http-equiv="encoding">
     <link rel="stylesheet" type="text/css" href="../global-resources/style.css" />
     <link rel="stylesheet" type="text/css" href="style.css" />
+    <script src="../global-resources/script.js"></script>
     <script src="editor.js"></script>
   </head>
   <body>
-    <div id="listArea" class="list-area">
-      <p>Select the site styles you wish to edit</p>
-      <ul id="siteList">
-      </ul>
-    </div>
-    <div id="editorArea" class="editor-area">
+    <nav class="list-area">
+      <button id="btnAdd">+ Add hostname</button>
+      <ul id="siteList"></ul>
+    </nav>
+    <main class="editor-area">
+      <h1 id="siteName"></h1>
       <div class="button-area">
+        <label class="enabled-toggle"><input type="checkbox" id="chkEnabled"> Enabled</label>
         <button id="btnSave">Save</button>
-        <button id="btnClear" class="neutral">Clear</button>
-        <button id="btnDone" class="neutral">Done</button>
-        <button id="btnDelete" class="error">Delete Entry</button>
+        <button id="btnRename" class="neutral">Rename</button>
+        <button id="btnDelete" class="error">Delete</button>
       </div>
-      <textarea id="styleData" wrap="soft">
-    </div>
+      <textarea id="styleData" wrap="soft" spellcheck="false"></textarea>
+    </main>
   </body>
 </html>

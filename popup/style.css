@@ -3,3 +3,9 @@ body {
   width: 200px;
   padding: 10px;
 }
+
+.hostname {
+  font-weight: 700;
+  word-break: break-all;
+  margin-top: 0;
+}
